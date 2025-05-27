@@ -11,7 +11,9 @@ import org.apache.pekko.actor.typed.javadsl.Behaviors
 import org.apache.pekko.cluster.sharding.typed.ShardingMessageExtractor
 import org.apache.pekko.cluster.sharding.typed.javadsl.EntityContext
 import org.apache.pekko.cluster.sharding.typed.javadsl.EntityTypeKey
+import org.springframework.stereotype.Component
 
+@Component
 class ChatRoomActor : ShardedActor<ChatRoomActor.Command> {
 
     companion object {
