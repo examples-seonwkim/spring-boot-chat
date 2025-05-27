@@ -38,24 +38,6 @@ class ChatRoomActor : ShardedActor<ChatRoomActor.Command> {
         @JsonProperty("message") val message: String
     ) : Command
 
-    interface ChatEvent : JsonSerializable
-
-    data class UserJoined @JsonCreator constructor(
-        @JsonProperty("userId") val userId: String,
-        @JsonProperty("roomId") val roomId: String
-    ) : ChatEvent
-
-    data class UserLeft @JsonCreator constructor(
-        @JsonProperty("userId") val userId: String,
-        @JsonProperty("roomId") val roomId: String
-    ) : ChatEvent
-
-    data class MessageReceived @JsonCreator constructor(
-        @JsonProperty("userId") val userId: String,
-        @JsonProperty("message") val message: String,
-        @JsonProperty("roomId") val roomId: String
-    ) : ChatEvent
-
     override fun typeKey(): EntityTypeKey<Command> = TYPE_KEY
 
     override fun create(ctx: EntityContext<Command>): Behavior<Command> {
