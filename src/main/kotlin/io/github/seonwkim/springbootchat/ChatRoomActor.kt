@@ -1,5 +1,6 @@
 package io.github.seonwkim.springbootchat
 
+import com.fasterxml.jackson.annotation.JsonCreator
 import com.fasterxml.jackson.annotation.JsonProperty
 import io.github.seonwkim.core.serialization.JsonSerializable
 import io.github.seonwkim.core.shard.DefaultShardingMessageExtractor
@@ -17,33 +18,49 @@ import org.springframework.stereotype.Component
 class ChatRoomActor : ShardedActor<ChatRoomActor.Command> {
 
     companion object {
-        val TYPE_KEY: EntityTypeKey<Command> = EntityTypeKey.create(Command::class.java, "chat-room-actor")
+        val TYPE_KEY: EntityTypeKey<Command> =
+            EntityTypeKey.create(Command::class.java, "ChatRoomActor")
     }
 
     interface Command : JsonSerializable
-    interface ChatEvent : JsonSerializable
 
-    data class JoinRoom(
+    data class JoinRoom @JsonCreator constructor(
         @JsonProperty("userId") val userId: String,
         @JsonProperty("userRef") val userRef: ActorRef<UserActor.Command>
     ) : Command
 
-    data class LeaveRoom(
+    data class LeaveRoom @JsonCreator constructor(
         @JsonProperty("userId") val userId: String
     ) : Command
 
-    data class SendMessage(
+    data class SendMessage @JsonCreator constructor(
         @JsonProperty("userId") val userId: String,
         @JsonProperty("message") val message: String
     ) : Command
 
+    interface ChatEvent : JsonSerializable
+
+    data class UserJoined @JsonCreator constructor(
+        @JsonProperty("userId") val userId: String,
+        @JsonProperty("roomId") val roomId: String
+    ) : ChatEvent
+
+    data class UserLeft @JsonCreator constructor(
+        @JsonProperty("userId") val userId: String,
+        @JsonProperty("roomId") val roomId: String
+    ) : ChatEvent
+
+    data class MessageReceived @JsonCreator constructor(
+        @JsonProperty("userId") val userId: String,
+        @JsonProperty("message") val message: String,
+        @JsonProperty("roomId") val roomId: String
+    ) : ChatEvent
+
     override fun typeKey(): EntityTypeKey<Command> = TYPE_KEY
 
     override fun create(ctx: EntityContext<Command>): Behavior<Command> {
-        return Behaviors.setup {
-            val roomId = ctx.entityId
-            chatRoom(roomId, mutableMapOf())
-        }
+        val roomId = ctx.entityId
+        return chatRoom(roomId, mutableMapOf())
     }
 
     private fun chatRoom(
@@ -51,28 +68,34 @@ class ChatRoomActor : ShardedActor<ChatRoomActor.Command> {
         connectedUsers: MutableMap<String, ActorRef<UserActor.Command>>
     ): Behavior<Command> {
         return Behaviors.receive(Command::class.java)
-            .onMessage(JoinRoom::class.java) { msg: JoinRoom ->
+            .onMessage(JoinRoom::class.java) { msg ->
                 connectedUsers[msg.userId] = msg.userRef
-                val event = UserActor.JoinRoom(msg.userId, roomId)
-                broadcastEvent(connectedUsers, event)
+                val joinRoomCmd = UserActor.JoinRoom(msg.userId, roomId)
+                broadcastCommand(connectedUsers, joinRoomCmd)
                 chatRoom(roomId, connectedUsers)
             }
-            .onMessage(LeaveRoom::class.java) { msg: LeaveRoom ->
-                connectedUsers.remove(msg.userId)
-                val event = UserActor.LeaveRoom(msg.userId, roomId)
-                broadcastEvent(connectedUsers, event)
+            .onMessage(LeaveRoom::class.java) { msg ->
+                val userRef = connectedUsers.remove(msg.userId)
+                userRef?.let {
+                    val leaveRoomCmd = UserActor.LeaveRoom(msg.userId, roomId)
+                    it.tell(leaveRoomCmd)
+                    broadcastCommand(connectedUsers, leaveRoomCmd)
+                }
                 chatRoom(roomId, connectedUsers)
             }
-            .onMessage(SendMessage::class.java) { msg: SendMessage ->
-                val event = UserActor.SendMessage(msg.userId, msg.message, roomId)
-                broadcastEvent(connectedUsers, event)
+            .onMessage(SendMessage::class.java) { msg ->
+                val receiveMessageCmd = UserActor.ReceiveMessage(msg.userId, msg.message, roomId)
+                broadcastCommand(connectedUsers, receiveMessageCmd)
                 Behaviors.same()
             }
             .build()
     }
 
-    private fun broadcastEvent(connectedUsers: Map<String, ActorRef<UserActor.Command>>, event: UserActor.Command) {
-        connectedUsers.values.forEach { userRef -> userRef.tell(event) }
+    private fun broadcastCommand(
+        connectedUsers: Map<String, ActorRef<UserActor.Command>>,
+        command: UserActor.Command
+    ) {
+        connectedUsers.values.forEach { it.tell(command) }
     }
 
     override fun extractor(): ShardingMessageExtractor<ShardEnvelope<Command>, Command> {

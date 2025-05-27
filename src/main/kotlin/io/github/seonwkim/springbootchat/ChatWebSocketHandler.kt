@@ -12,8 +12,11 @@ import org.springframework.web.socket.WebSocketSession
 import org.springframework.web.socket.handler.TextWebSocketHandler
 import java.io.IOException
 import java.util.UUID
-import java.util.concurrent.CompletionStage
 
+/**
+ * WebSocket handler for chat messages. Handles WebSocket connections and messages,
+ * and connects them to the actor system.
+ */
 @Component
 class ChatWebSocketHandler(
     private val objectMapper: ObjectMapper,
@@ -24,12 +27,14 @@ class ChatWebSocketHandler(
     override fun afterConnectionEstablished(session: WebSocketSession) {
         val userId = UUID.randomUUID().toString()
         session.attributes["userId"] = userId
+
         chatService.registerSession(userId, session)
 
         try {
-            val response: ObjectNode = objectMapper.createObjectNode()
-            response.put("type", "connected")
-            response.put("userId", userId)
+            val response: ObjectNode = objectMapper.createObjectNode().apply {
+                put("type", "connected")
+                put("userId", userId)
+            }
             session.sendMessage(TextMessage(objectMapper.writeValueAsString(response)))
         } catch (e: IOException) {
             e.printStackTrace()
@@ -39,7 +44,7 @@ class ChatWebSocketHandler(
     override fun handleTextMessage(session: WebSocketSession, message: TextMessage) {
         val userId = session.attributes["userId"] as? String ?: return
         val payload = objectMapper.readTree(message.payload)
-        val type = payload.get("type").asText()
+        val type = payload["type"]?.asText()
 
         when (type) {
             "join" -> handleJoinRoom(session, userId, payload)
@@ -53,38 +58,25 @@ class ChatWebSocketHandler(
         val userId = session.attributes["userId"] as? String
         if (userId != null) {
             chatService.removeSession(userId)
-
-            // If the user is in a room, leave it
-            val roomId = chatService.getUserRoom(userId)
-            if (roomId != null) {
-                chatService.leaveRoom(userId, roomId)
-            }
         }
     }
 
     private fun handleJoinRoom(session: WebSocketSession, userId: String, payload: JsonNode) {
-        val roomId = payload.get("roomId").asText()
+        val roomId = payload["roomId"]?.asText() ?: return
+
         try {
-            // Create UserActor
-            val userActorRefFuture = actorSystem.spawn(UserActor.Command::class.java, userId)
+            val userActorContext = UserActorContext("user-$userId", session)
 
-            userActorRefFuture.thenAccept { userActorRef ->
-                // Set the WebSocketSession for the UserActor
-                userActorRef.ref.tell(UserActor.SetWebSocketSession(session))
+            val actorRefFuture = actorSystem.spawn(UserActor.Command::class.java, userActorContext)
 
-                // Get a reference to the ChatRoomActor (will be created if it doesn't exist)
-                val roomRef = actorSystem.entityRef(ChatRoomActor.TYPE_KEY, roomId)
-
-                // Send JoinRoom command to ChatRoomActor with the UserActor reference
-                roomRef.tell(ChatRoomActor.JoinRoom(userId, userActorRef.ref))
-
-                // Store the room ID for this user
-                chatService.registerUserRoom(userId, roomId)
+            actorRefFuture.thenAccept { actorRef ->
+                chatService.joinRoom(userId, roomId, actorRef.ref)
 
                 try {
-                    val response = objectMapper.createObjectNode()
-                    response.put("type", "joined")
-                    response.put("roomId", roomId)
+                    val response: ObjectNode = objectMapper.createObjectNode().apply {
+                        put("type", "joined")
+                        put("roomId", roomId)
+                    }
                     session.sendMessage(TextMessage(objectMapper.writeValueAsString(response)))
                 } catch (e: IOException) {
                     e.printStackTrace()
@@ -105,10 +97,12 @@ class ChatWebSocketHandler(
         val roomId = chatService.getUserRoom(userId)
         if (roomId != null) {
             chatService.leaveRoom(userId, roomId)
+
             try {
-                val response = objectMapper.createObjectNode()
-                response.put("type", "left")
-                response.put("roomId", roomId)
+                val response: ObjectNode = objectMapper.createObjectNode().apply {
+                    put("type", "left")
+                    put("roomId", roomId)
+                }
                 session.sendMessage(TextMessage(objectMapper.writeValueAsString(response)))
             } catch (e: IOException) {
                 e.printStackTrace()
@@ -119,8 +113,12 @@ class ChatWebSocketHandler(
     private fun handleChatMessage(session: WebSocketSession, userId: String, payload: JsonNode) {
         val roomId = chatService.getUserRoom(userId)
         if (roomId != null) {
-            val messageText = payload.get("message").asText()
-            chatService.sendMessage(userId, roomId, messageText)
+            val messageText = payload["message"]?.asText()
+            if (messageText != null) {
+                chatService.sendMessage(userId, roomId, messageText)
+            } else {
+                sendErrorMessage(session, "Message content missing")
+            }
         } else {
             sendErrorMessage(session, "You are not in a room")
         }
@@ -129,9 +127,10 @@ class ChatWebSocketHandler(
     private fun sendErrorMessage(session: WebSocketSession, errorMessage: String) {
         try {
             if (session.isOpen) {
-                val response = objectMapper.createObjectNode()
-                response.put("type", "error")
-                response.put("message", errorMessage)
+                val response: ObjectNode = objectMapper.createObjectNode().apply {
+                    put("type", "error")
+                    put("message", errorMessage)
+                }
                 session.sendMessage(TextMessage(objectMapper.writeValueAsString(response)))
             }
         } catch (e: IOException) {

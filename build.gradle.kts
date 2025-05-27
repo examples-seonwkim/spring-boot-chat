@@ -27,7 +27,7 @@ dependencyManagement {
 }
 
 dependencies {
-    implementation("io.github.seonwkim:spring-boot-starter-actor_3:0.0.26")
+    implementation("io.github.seonwkim:spring-boot-starter-actor_3:0.0.29")
 
     implementation("org.springframework.boot:spring-boot-starter")
     implementation("org.springframework.boot:spring-boot-starter-webflux")
