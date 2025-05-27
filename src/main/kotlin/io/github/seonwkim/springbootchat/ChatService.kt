@@ -26,7 +26,7 @@ class ChatService(
         }
     }
 
-    fun joinRoom(userId: String, roomId: String, userRef: ActorRef<ChatRoomActor.ChatEvent>) {
+    fun joinRoom(userId: String, roomId: String, userRef: ActorRef<UserActor.Command>) {
         val roomRef: SpringShardedActorRef<ChatRoomActor.Command> =
             actorSystem.entityRef(ChatRoomActor.TYPE_KEY, roomId)
         roomRef.tell(ChatRoomActor.JoinRoom(userId, userRef))
@@ -49,4 +49,8 @@ class ChatService(
     fun getSession(userId: String): WebSocketSession? = sessions[userId]
 
     fun getUserRoom(userId: String): String? = userRooms[userId]
+
+    fun registerUserRoom(userId: String, roomId: String) {
+        userRooms[userId] = roomId
+    }
 }

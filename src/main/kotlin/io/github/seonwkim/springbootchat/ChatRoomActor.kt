@@ -25,7 +25,7 @@ class ChatRoomActor : ShardedActor<ChatRoomActor.Command> {
 
     data class JoinRoom(
         @JsonProperty("userId") val userId: String,
-        @JsonProperty("userRef") val userRef: ActorRef<ChatEvent>
+        @JsonProperty("userRef") val userRef: ActorRef<UserActor.Command>
     ) : Command
 
     data class LeaveRoom(
@@ -36,22 +36,6 @@ class ChatRoomActor : ShardedActor<ChatRoomActor.Command> {
         @JsonProperty("userId") val userId: String,
         @JsonProperty("message") val message: String
     ) : Command
-
-    data class UserJoined(
-        @JsonProperty("userId") val userId: String,
-        @JsonProperty("roomId") val roomId: String
-    ) : ChatEvent
-
-    data class UserLeft(
-        @JsonProperty("userId") val userId: String,
-        @JsonProperty("roomId") val roomId: String
-    ) : ChatEvent
-
-    data class MessageReceived(
-        @JsonProperty("userId") val userId: String,
-        @JsonProperty("message") val message: String,
-        @JsonProperty("roomId") val roomId: String
-    ) : ChatEvent
 
     override fun typeKey(): EntityTypeKey<Command> = TYPE_KEY
 
@@ -64,30 +48,30 @@ class ChatRoomActor : ShardedActor<ChatRoomActor.Command> {
 
     private fun chatRoom(
         roomId: String,
-        connectedUsers: MutableMap<String, ActorRef<ChatEvent>>
+        connectedUsers: MutableMap<String, ActorRef<UserActor.Command>>
     ): Behavior<Command> {
         return Behaviors.receive(Command::class.java)
-            .onMessage(JoinRoom::class.java) { msg ->
+            .onMessage(JoinRoom::class.java) { msg: JoinRoom ->
                 connectedUsers[msg.userId] = msg.userRef
-                val event = UserJoined(msg.userId, roomId)
+                val event = UserActor.JoinRoom(msg.userId, roomId)
                 broadcastEvent(connectedUsers, event)
                 chatRoom(roomId, connectedUsers)
             }
-            .onMessage(LeaveRoom::class.java) { msg ->
+            .onMessage(LeaveRoom::class.java) { msg: LeaveRoom ->
                 connectedUsers.remove(msg.userId)
-                val event = UserLeft(msg.userId, roomId)
+                val event = UserActor.LeaveRoom(msg.userId, roomId)
                 broadcastEvent(connectedUsers, event)
                 chatRoom(roomId, connectedUsers)
             }
-            .onMessage(SendMessage::class.java) { msg ->
-                val event = MessageReceived(msg.userId, msg.message, roomId)
+            .onMessage(SendMessage::class.java) { msg: SendMessage ->
+                val event = UserActor.SendMessage(msg.userId, msg.message, roomId)
                 broadcastEvent(connectedUsers, event)
                 Behaviors.same()
             }
             .build()
     }
 
-    private fun broadcastEvent(connectedUsers: Map<String, ActorRef<ChatEvent>>, event: ChatEvent) {
+    private fun broadcastEvent(connectedUsers: Map<String, ActorRef<UserActor.Command>>, event: UserActor.Command) {
         connectedUsers.values.forEach { userRef -> userRef.tell(event) }
     }
 

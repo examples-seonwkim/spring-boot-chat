@@ -21,10 +21,6 @@ class ChatWebSocketHandler(
     private val actorSystem: SpringActorSystem
 ) : TextWebSocketHandler() {
 
-    init {
-        UserActor.setObjectMapper(objectMapper)
-    }
-
     override fun afterConnectionEstablished(session: WebSocketSession) {
         val userId = UUID.randomUUID().toString()
         session.attributes["userId"] = userId
@@ -57,18 +53,34 @@ class ChatWebSocketHandler(
         val userId = session.attributes["userId"] as? String
         if (userId != null) {
             chatService.removeSession(userId)
+
+            // If the user is in a room, leave it
+            val roomId = chatService.getUserRoom(userId)
+            if (roomId != null) {
+                chatService.leaveRoom(userId, roomId)
+            }
         }
     }
 
     private fun handleJoinRoom(session: WebSocketSession, userId: String, payload: JsonNode) {
         val roomId = payload.get("roomId").asText()
         try {
-            UserActor.registerSession(userId, session)
-            val actorRefFuture: CompletionStage<SpringActorRef<ChatRoomActor.ChatEvent>> =
-                actorSystem.spawn(ChatRoomActor.ChatEvent::class.java, "user-$userId")
+            // Create UserActor
+            val userActorRefFuture = actorSystem.spawn(UserActor.Command::class.java, userId)
 
-            actorRefFuture.thenAccept { actorRef ->
-                chatService.joinRoom(userId, roomId, actorRef.ref)
+            userActorRefFuture.thenAccept { userActorRef ->
+                // Set the WebSocketSession for the UserActor
+                userActorRef.ref.tell(UserActor.SetWebSocketSession(session))
+
+                // Get a reference to the ChatRoomActor (will be created if it doesn't exist)
+                val roomRef = actorSystem.entityRef(ChatRoomActor.TYPE_KEY, roomId)
+
+                // Send JoinRoom command to ChatRoomActor with the UserActor reference
+                roomRef.tell(ChatRoomActor.JoinRoom(userId, userActorRef.ref))
+
+                // Store the room ID for this user
+                chatService.registerUserRoom(userId, roomId)
+
                 try {
                     val response = objectMapper.createObjectNode()
                     response.put("type", "joined")

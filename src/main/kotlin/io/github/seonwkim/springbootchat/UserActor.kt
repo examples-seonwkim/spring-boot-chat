@@ -1,8 +1,10 @@
 package io.github.seonwkim.springbootchat
 
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.ObjectNode
 import io.github.seonwkim.core.SpringActor
+import io.github.seonwkim.core.SpringActorContext
 import org.apache.pekko.actor.typed.Behavior
 import org.apache.pekko.actor.typed.javadsl.ActorContext
 import org.apache.pekko.actor.typed.javadsl.Behaviors
@@ -10,57 +12,65 @@ import org.springframework.stereotype.Component
 import org.springframework.web.socket.TextMessage
 import org.springframework.web.socket.WebSocketSession
 import java.io.IOException
-import java.util.concurrent.ConcurrentHashMap
 
 @Component
-class UserActor : SpringActor {
-    companion object {
-        private val sessions = ConcurrentHashMap<String, WebSocketSession>()
-        private var objectMapper: ObjectMapper? = null
+class UserActor(
+    private val objectMapper: ObjectMapper
+) : SpringActor {
 
-        @JvmStatic
-        fun setObjectMapper(mapper: ObjectMapper) {
-            objectMapper = mapper
-        }
+    override fun commandClass(): Class<*> = Command::class.java
 
-        @JvmStatic
-        fun registerSession(userId: String, session: WebSocketSession) {
-            sessions[userId] = session
-        }
-    }
+    interface Command {}
 
-    override fun commandClass(): Class<*> = ChatRoomActor.ChatEvent::class.java
+    data class SetWebSocketSession(
+        @JsonProperty("session") val session: WebSocketSession
+    ) : Command
 
-    override fun create(id: String): Behavior<ChatRoomActor.ChatEvent> {
+    data class JoinRoom(
+        @JsonProperty("userId") val userId: String,
+        @JsonProperty("roomId") val roomId: String
+    ) : Command
+
+    data class LeaveRoom(
+        @JsonProperty("userId") val userId: String,
+        @JsonProperty("roomId") val roomId: String
+    ) : Command
+
+    data class SendMessage(
+        @JsonProperty("userId") val userId: String,
+        @JsonProperty("message") val message: String,
+        @JsonProperty("roomId") val roomId: String
+    ) : Command
+
+    override fun create(actorContext: SpringActorContext): Behavior<Command> {
         return Behaviors.setup { context ->
-            context.log.info("Creating user actor with ID: {}", id)
-            val userId = if (id.startsWith("user-")) id.substring(5) else id
-            val session = sessions[userId]
-            val mapper = objectMapper
-
-            if (session == null || mapper == null) {
-                context.log.error("Session or ObjectMapper not found for user ID: {}", userId)
-                Behaviors.empty()
-            } else {
-                UserActorBehavior(context, session, mapper).create()
-            }
+            val userId = actorContext.actorId()
+            context.log.info("Creating UserActor for user ID: {}", userId)
+            UserActorBehavior(context, null, objectMapper).create()
         }
     }
 
     private class UserActorBehavior(
-        private val context: ActorContext<ChatRoomActor.ChatEvent>,
-        private val session: WebSocketSession,
+        private val context: ActorContext<Command>,
+        private var session: WebSocketSession?,
         private val objectMapper: ObjectMapper
     ) {
-        fun create(): Behavior<ChatRoomActor.ChatEvent> {
-            return Behaviors.receive(ChatRoomActor.ChatEvent::class.java)
-                .onMessage(ChatRoomActor.UserJoined::class.java, this::onUserJoined)
-                .onMessage(ChatRoomActor.UserLeft::class.java, this::onUserLeft)
-                .onMessage(ChatRoomActor.MessageReceived::class.java, this::onMessageReceived)
+        fun create(): Behavior<Command> {
+            return Behaviors.receive(Command::class.java)
+                .onMessage(SetWebSocketSession::class.java, this::onSetWebSocketSession)
+                .onMessage(JoinRoom::class.java, this::onUserJoined)
+                .onMessage(LeaveRoom::class.java, this::onUserLeft)
+                .onMessage(SendMessage::class.java, this::onMessageReceived)
                 .build()
         }
 
-        private fun onUserJoined(event: ChatRoomActor.UserJoined): Behavior<ChatRoomActor.ChatEvent> {
+        private fun onSetWebSocketSession(command: SetWebSocketSession): Behavior<Command> {
+            context.log.info("Setting WebSocketSession for actor")
+            session = command.session
+            return Behaviors.same()
+        }
+
+        private fun onUserJoined(event: JoinRoom): Behavior<Command> {
             sendEvent("user_joined") {
                 put("userId", event.userId)
                 put("roomId", event.roomId)
@@ -68,7 +78,7 @@ class UserActor : SpringActor {
             return Behaviors.same()
         }
 
-        private fun onUserLeft(event: ChatRoomActor.UserLeft): Behavior<ChatRoomActor.ChatEvent> {
+        private fun onUserLeft(event: LeaveRoom): Behavior<Command> {
             sendEvent("user_left") {
                 put("userId", event.userId)
                 put("roomId", event.roomId)
@@ -76,7 +86,7 @@ class UserActor : SpringActor {
             return Behaviors.same()
         }
 
-        private fun onMessageReceived(event: ChatRoomActor.MessageReceived): Behavior<ChatRoomActor.ChatEvent> {
+        private fun onMessageReceived(event: SendMessage): Behavior<Command> {
             sendEvent("message") {
                 put("userId", event.userId)
                 put("message", event.message)
@@ -86,12 +96,19 @@ class UserActor : SpringActor {
         }
 
         private fun sendEvent(type: String, builder: ObjectNode.() -> Unit) {
+            if (session == null) {
+                context.log.error("Cannot send event: WebSocketSession is not set")
+                return
+            }
+
             try {
                 val eventNode = objectMapper.createObjectNode()
                 eventNode.put("type", type)
                 eventNode.builder()
-                if (session.isOpen) {
-                    session.sendMessage(TextMessage(objectMapper.writeValueAsString(eventNode)))
+                if (session!!.isOpen) {
+                    session!!.sendMessage(TextMessage(objectMapper.writeValueAsString(eventNode)))
+                } else {
+                    context.log.warn("Cannot send event: WebSocketSession is closed")
                 }
             } catch (e: IOException) {
                 context.log.error("Failed to send message to WebSocket", e)
