@@ -1,4 +1,4 @@
-package io.github.seonwkim.springbootchat.controller
+package io.github.seonwkim.springbootchat
 
 import io.github.seonwkim.core.SpringActorSystem
 import org.springframework.web.bind.annotation.GetMapping

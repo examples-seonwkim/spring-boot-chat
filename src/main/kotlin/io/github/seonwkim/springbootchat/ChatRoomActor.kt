@@ -1,4 +1,4 @@
-package io.github.seonwkim.springbootchat.actor
+package io.github.seonwkim.springbootchat
 
 import com.fasterxml.jackson.annotation.JsonProperty
 import io.github.seonwkim.core.serialization.JsonSerializable
