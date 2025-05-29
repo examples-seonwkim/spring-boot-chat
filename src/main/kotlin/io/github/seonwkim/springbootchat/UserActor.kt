@@ -1,11 +1,11 @@
 package io.github.seonwkim.springbootchat
 
-import com.fasterxml.jackson.annotation.JsonCreator
-import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.ObjectNode
 import io.github.seonwkim.core.SpringActor
 import io.github.seonwkim.core.SpringActorContext
+import io.github.seonwkim.core.SpringActorSystem
+import io.github.seonwkim.core.SpringShardedActorRef
 import io.github.seonwkim.core.serialization.JsonSerializable
 import org.apache.pekko.actor.typed.Behavior
 import org.apache.pekko.actor.typed.javadsl.ActorContext
@@ -15,97 +15,146 @@ import org.springframework.web.socket.TextMessage
 import org.springframework.web.socket.WebSocketSession
 import java.io.IOException
 
-/**
- * Actor that represents a user in the chat system. It receives commands and forwards
- * them to the user's WebSocket session.
- */
 @Component
-class UserActor(private val objectMapper: ObjectMapper) : SpringActor {
+class UserActor : SpringActor {
 
     interface Command : JsonSerializable
 
-    data class JoinRoom @JsonCreator constructor(
-        @JsonProperty("userId") val userId: String,
-        @JsonProperty("roomId") val roomId: String
-    ) : Command
+    class Connect : Command
 
-    data class LeaveRoom @JsonCreator constructor(
-        @JsonProperty("userId") val userId: String,
-        @JsonProperty("roomId") val roomId: String
-    ) : Command
+    data class JoinRoom(val roomId: String) : Command
 
-    data class SendMessage @JsonCreator constructor(
-        @JsonProperty("userId") val userId: String,
-        @JsonProperty("message") val message: String,
-        @JsonProperty("roomId") val roomId: String
-    ) : Command
+    class LeaveRoom : Command
 
-    data class ReceiveMessage @JsonCreator constructor(
-        @JsonProperty("userId") val userId: String,
-        @JsonProperty("message") val message: String,
-        @JsonProperty("roomId") val roomId: String
+    data class SendMessage(val message: String) : Command
+
+    data class JoinRoomEvent(val userId: String) : Command
+
+    data class LeaveRoomEvent(val userId: String) : Command
+
+    data class SendMessageEvent(
+        val userId: String,
+        val message: String
     ) : Command
 
     override fun commandClass(): Class<*> = Command::class.java
 
-    override fun create(actorContext: SpringActorContext): Behavior<Command> {
-        require(actorContext is UserActorContext) {
-            "Expected UserActorContext but got ${actorContext::class.java.name}"
-        }
+    class UserActorContext(
+        val actorSystem: SpringActorSystem,
+        val objectMapper: ObjectMapper,
+        val userId: String,
+        val session: WebSocketSession
+    ) : SpringActorContext {
+        override fun actorId(): String = userId
+    }
 
-        val id = actorContext.actorId()
-        val session = actorContext.session
+    override fun create(actorContext: SpringActorContext): Behavior<Command> {
+        val userActorContext = actorContext as? UserActorContext
+            ?: throw IllegalStateException("Must be UserActorContext")
 
         return Behaviors.setup { context ->
-            context.log.info("Creating user actor with ID: {}", id)
-            UserActorBehavior(context, session, objectMapper).create()
+            UserActorBehavior(
+                context,
+                userActorContext.actorSystem,
+                userActorContext.objectMapper,
+                userActorContext.userId,
+                userActorContext.session
+            ).create()
         }
     }
 
     private class UserActorBehavior(
         private val context: ActorContext<Command>,
-        private val session: WebSocketSession,
-        private val objectMapper: ObjectMapper
+        private val actorSystem: SpringActorSystem,
+        private val objectMapper: ObjectMapper,
+        private val userId: String,
+        private val session: WebSocketSession
     ) {
+        private var currentRoomId: String? = null
 
-        fun create(): Behavior<Command> {
-            return Behaviors.receive(Command::class.java)
-                .onMessage(JoinRoom::class.java, ::onJoinRoom)
-                .onMessage(LeaveRoom::class.java, ::onLeaveRoom)
-                .onMessage(SendMessage::class.java, ::onSendMessage)
-                .onMessage(ReceiveMessage::class.java, ::onReceiveMessage)
-                .build()
+        fun create(): Behavior<Command> = Behaviors.receive(Command::class.java)
+            .onMessage(Connect::class.java, ::onConnect)
+            .onMessage(JoinRoom::class.java, ::onJoinRoom)
+            .onMessage(LeaveRoom::class.java, ::onLeaveRoom)
+            .onMessage(SendMessage::class.java, ::onSendMessage)
+            .onMessage(JoinRoomEvent::class.java, ::onJoinRoomEvent)
+            .onMessage(LeaveRoomEvent::class.java, ::onLeaveRoomEvent)
+            .onMessage(SendMessageEvent::class.java, ::onSendMessageEvent)
+            .build()
+
+        private fun onConnect(connect: Connect): Behavior<Command> {
+            sendEvent("connected") {
+                put("userId", userId)
+            }
+            return Behaviors.same()
         }
 
         private fun onJoinRoom(command: JoinRoom): Behavior<Command> {
-            sendEvent("user_joined") {
-                put("userId", command.userId)
-                put("roomId", command.roomId)
+            currentRoomId = command.roomId
+            val roomActor = getRoomActor()
+            sendEvent("joined") {
+                put("roomId", currentRoomId)
             }
+
+            roomActor.tell(ChatRoomActor.JoinRoom(userId, context.self))
             return Behaviors.same()
         }
 
         private fun onLeaveRoom(command: LeaveRoom): Behavior<Command> {
-            sendEvent("user_left") {
-                put("userId", command.userId)
-                put("roomId", command.roomId)
+            if (currentRoomId == null) {
+                context.log.info("$userId user has not joined any room.")
+                return Behaviors.same()
             }
+
+            sendEvent("left") {
+                put("roomId", currentRoomId)
+            }
+
+            val roomActor = getRoomActor()
+            roomActor.tell(ChatRoomActor.LeaveRoom(userId))
+
             return Behaviors.same()
         }
 
         private fun onSendMessage(command: SendMessage): Behavior<Command> {
-            // No-op for sending
+            if (currentRoomId == null) {
+                context.log.info("$userId user has not joined any room.")
+                return Behaviors.same()
+            }
+
+            val roomActor = getRoomActor()
+            roomActor.tell(ChatRoomActor.SendMessage(userId, command.message))
+
             return Behaviors.same()
         }
 
-        private fun onReceiveMessage(command: ReceiveMessage): Behavior<Command> {
-            sendEvent("message") {
-                put("userId", command.userId)
-                put("message", command.message)
-                put("roomId", command.roomId)
+        private fun onJoinRoomEvent(event: JoinRoomEvent): Behavior<Command> {
+            sendEvent("user_joined") {
+                put("userId", event.userId)
+                put("roomId", currentRoomId)
             }
             return Behaviors.same()
         }
+
+        private fun onLeaveRoomEvent(event: LeaveRoomEvent): Behavior<Command> {
+            sendEvent("user_left") {
+                put("userId", event.userId)
+                put("roomId", currentRoomId)
+            }
+            return Behaviors.same()
+        }
+
+        private fun onSendMessageEvent(event: SendMessageEvent): Behavior<Command> {
+            sendEvent("message") {
+                put("userId", event.userId)
+                put("message", event.message)
+                put("roomId", currentRoomId)
+            }
+            return Behaviors.same()
+        }
+
+        private fun getRoomActor(): SpringShardedActorRef<ChatRoomActor.Command> =
+            actorSystem.entityRef(ChatRoomActor.Companion.TYPE_KEY, currentRoomId!!)
 
         private fun sendEvent(type: String, builder: ObjectNode.() -> Unit) {
             try {
