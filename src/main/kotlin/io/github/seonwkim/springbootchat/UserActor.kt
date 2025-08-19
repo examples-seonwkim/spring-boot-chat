@@ -16,7 +16,7 @@ import org.springframework.web.socket.WebSocketSession
 import java.io.IOException
 
 @Component
-class UserActor : SpringActor {
+class UserActor : SpringActor<UserActor, UserActor.Command> {
 
     interface Command : JsonSerializable
 
@@ -36,8 +36,6 @@ class UserActor : SpringActor {
         val userId: String,
         val message: String
     ) : Command
-
-    override fun commandClass(): Class<*> = Command::class.java
 
     class UserActorContext(
         val actorSystem: SpringActorSystem,

@@ -36,7 +36,7 @@ class ChatWebSocketHandler(
             session = session
         )
 
-        actorSystem.spawn(UserActor.Command::class.java, userActorContext)
+        actorSystem.spawn(UserActor::class.java, userActorContext)
             .thenAccept { userActor ->
                 userActors[userId] = userActor
                 userActor.tell(UserActor.Connect())
@@ -60,7 +60,7 @@ class ChatWebSocketHandler(
         val userActor = getUserActor(userId)
 
         if (userId != null && userActor != null) {
-            actorSystem.stop(UserActor.Command::class.java, userId)
+            actorSystem.stop(UserActor::class.java, userId)
             userActors.remove(userId)
         }
     }
