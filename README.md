@@ -1,5 +1,7 @@
 # spring-boot-chat
 
+Refer to [spring-boot-starter-actor](https://github.com/seonWKim/spring-boot-starter-actor) for further details. 
+
 ## Architecture
 
 ```mermaid
